@@ -231,6 +231,77 @@ classdef ModelsOfManyTimeSeries
             
         end
         
+        % optimize many parameters for OD simulatenously using nlinfit
+        % p is a cell array with all the parameters to optimize
+        % fits specific models from listOfModels ONLY. To use the fitted
+        % values in the other models, use flagForUpdate
+        % Assumes the highest titration is the first in the listOfModels
+        % Delta is a multiplicative delta between titrations, .5 indicates
+        % a 2-dilution
+        function mwg = fitTitration(mwg, numTitr, delta, p, listOfModels, ...
+                flagForPlot, confInt) %7 possible inputs
+            if nargin == 6
+                confInt = 0;
+            end
+            
+            % initialize with the values read from the first model in the
+            % list
+            b0 = mwg.arrayOfModels(listOfModels(1)).model.getParameterValues(p);
+%             b0 = mwg.arrayOfModels(1).model.getParameterValues(p);
+            [timehours, ods, ~] = mwg.getAllTimeSeries(listOfModels);
+            odModel = zeros(size(ods));
+
+            function modelResult = model(b, t)
+                params = zeros(numTitr, 1); %fits only one param during the titration fitting
+                for i = 1:length(listOfModels)
+                    params(i,1) = b*(i-1)*delta;
+                    mwg = mwg.changeParameterValue(p, params(i), listOfModels);
+                end
+                mwg = mwg.solveModel(listOfModels);
+                c = 0;
+                for j = listOfModels
+                    c = c + 1;
+                    odModel(:, c) =...
+                        interp1(mwg.arrayOfModels(j).model.timehours,...
+                        mwg.arrayOfModels(j).model.x, timehours, 'nearest');
+                end
+                modelResult = log(odModel(:));
+            end 
+            
+            [mdl,R,J,CovB,MSE] =...
+                nlinfit(timehours, log(ods(:)),...
+                @model, b0, optimset('Display', 'iter'))
+            % set the values
+            % THIS PART NEEDS TO BE CHANGED TO COMPENSATE FOR THE DIFFERENT
+            % VALUES IN THE TITRATION - ARE THEY ALL RETURNED IN MDL?
+            % Or do we need to be solving each titration independently,
+            % then combining the results... 
+            
+            mwg = mwg.changeParameterValue(p, mdl, listOfModels);
+            mwg = mwg.solveModel;
+            
+            
+            if (nargin > 5) && (flagForPlot)
+                figure;
+                plot(timehours, ods(1:length(timehours)), 'b-');
+                hold on;
+                [ypred, delta] = nlpredci(@model,...
+                    timehours,mdl,R,'Covar',CovB,...
+                    'MSE',MSE,'SimOpt','on');
+                ci = nlparci(mdl,R,'covar',CovB)
+                lower = ypred - delta;
+                upper = ypred + delta;
+                plot(timehours,exp(ypred(1:length(timehours))),'k','LineWidth',2);
+                plot(timehours,...
+                    [exp(lower(1:length(timehours))),...
+                    exp(upper(1:length(timehours)))]...
+                    ,'r--','LineWidth',1.5);
+                hold off;
+
+            end
+            
+        end
+        
         % compile all data points in a single matrix to use with nlinfit
         function [timehours, ods, gfps] = getAllTimeSeries(mwg, listOfModels)
             if nargin == 1
@@ -362,17 +433,17 @@ classdef ModelsOfManyTimeSeries
         end
         
         function [] = whatIsy0(mwg, listOfModels)
-            fprintf('y0 = [p.x0  p.C0Value  p.N0Value  p.I0Value p.ni0  p.ii0  p.gi0];');
+            fprintf('y0 = [p.x0  p.C0Value  p.N0Value  p.I0Value p.ni0  p.ii0  p.gi0];\n');
             y0names = {'x0', 'C0Value',  'N0Value',  'I0Value', 'ni0',  'ii0',  'gi0'};
             
             if nargin < 2
                 listOfModels = 1;
             end
             
-            for j = 1:length(listOfModels)
-                p = mwg.arrayOfModels(listOfModels(j)).model.p;
-                fprintf(strcat('Model ', listOfModels(j)));
-                for i = length(y0names)
+            for j = listOfModels
+                p = mwg.arrayOfModels(j).model.p;
+                fprintf(strcat('Model ', num2str(j), '\n'));
+                for i = 1:length(y0names)
                     fprintf('p.%s = %f;\n', y0names{i}, p.(y0names{i}));
                 end
                 fprintf('\n');
